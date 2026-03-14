@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: replyweave
+      POSTGRES_PASSWORD: replyweave
+      POSTGRES_DB: replyweave
+    ports:
+      - "5432:5432"
+    volumes:
+      - replyweave_db:/var/lib/postgresql/data
+
+  backend:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+asyncpg://replyweave:replyweave@db:5432/replyweave
+      LOG_LEVEL: INFO
+      EMBEDDING_MODEL_NAME: all-MiniLM-L6-v2
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+
+volumes:
+  replyweave_db:

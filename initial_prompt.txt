@@ -1,0 +1,559 @@
+
+You are a senior backend engineer.
+
+Build a production-quality backend for a social platform where users share conversations with LLMs.
+
+The project name is **replyweave**.
+
+The platform is similar to an "Instagram for human–LLM conversations".
+
+Users share structured conversations between humans and AI models.
+
+The system must support:
+
+* posting conversations
+* importing conversations from ChatGPT or Claude share links
+* browsing latest posts
+* semantic search
+* viewing posts by user
+* remixing posts
+* finding similar conversations
+
+---
+
+# IMPORTANT WORKFLOW
+
+Before writing any code:
+
+1. Produce an implementation plan.
+2. List all files that will be created.
+3. Explain responsibilities of each module.
+4. Describe database schema and migrations.
+5. Describe API endpoints.
+
+Only after the plan is complete should you generate code.
+
+The final answer must contain:
+
+1. Implementation plan
+2. File tree
+3. Full code for every file
+
+---
+
+# CODE GENERATION RULES
+
+When generating code:
+
+* Always output COMPLETE files
+* Never omit sections
+* Never write "rest of file omitted"
+* Each file must be shown in full with its file path as a header
+
+Example:
+
+```
+backend/app/main.py
+
+<complete file contents>
+```
+
+---
+
+# TECH STACK
+
+Backend
+
+* Python 3.11
+* FastAPI
+* SQLAlchemy 2.x
+* Pydantic
+* PostgreSQL
+* pgvector
+* Alembic
+
+Libraries
+
+* requests
+* beautifulsoup4
+* sentence-transformers
+* numpy
+
+Dependency management
+
+* uv
+
+Containerization
+
+* Docker
+* docker-compose
+
+---
+
+# PROJECT STRUCTURE
+
+```
+repo/
+
+backend/
+  app/
+    main.py
+    config.py
+    database.py
+    models.py
+    schemas.py
+
+    routes/
+      posts.py
+      users.py
+      search.py
+      import_routes.py
+
+    services/
+      embedding_service.py
+      import_service.py
+      conversation_parser.py
+
+    normalizers/
+      chatgpt_normalizer.py
+      claude_normalizer.py
+
+  alembic/
+
+  pyproject.toml
+  docker-compose.yml
+  Dockerfile
+```
+
+Dependencies must be defined in `pyproject.toml` and installed via `uv`.
+
+---
+
+# AUTHENTICATION
+
+There is no login or signup flow. Authentication is intentionally out of scope.
+
+All write endpoints must require a header:
+
+```
+X-User-Id
+```
+
+This must contain a valid UUID.
+
+The UUID is treated as the acting user without verification.
+
+If the header is missing or invalid, return HTTP 400.
+
+Do not implement:
+
+* JWT
+* OAuth
+* sessions
+* token systems
+
+---
+
+# DATABASE DESIGN
+
+Use PostgreSQL extension:
+
+```
+pgcrypto
+```
+
+UUIDs must be generated in the database using:
+
+```
+gen_random_uuid()
+```
+
+---
+
+## Users table
+
+```
+users
+  id            uuid primary key default gen_random_uuid()
+  username      unique
+  created_at    timestamp
+```
+
+---
+
+## Posts table
+
+```
+posts
+  id                    uuid primary key default gen_random_uuid()
+  title                 text
+  prompt                text
+  conversation_summary  text
+  conversation_json     jsonb
+
+  source_platform       text
+  source_model          text
+
+  remix_of              uuid nullable
+
+  created_by            uuid references users(id)
+
+  created_at            timestamp
+
+  likes_count           integer default 0
+  comments_count        integer default 0
+  remix_count           integer default 0
+
+  message_count         integer
+  token_estimate        integer
+  language              text
+
+  embedding             vector(384)
+```
+
+Embeddings must be generated from:
+
+```
+conversation_summary
+```
+
+---
+
+## Messages table
+
+```
+messages
+  id          uuid primary key default gen_random_uuid()
+  post_id     uuid references posts(id)
+  role        text
+  content     text
+  position    integer
+  created_at  timestamp
+```
+
+---
+
+## Likes table
+
+```
+likes
+  user_id     uuid
+  post_id     uuid
+  created_at  timestamp
+```
+
+---
+
+## Comments table
+
+```
+comments
+  id          uuid primary key default gen_random_uuid()
+  post_id     uuid
+  user_id     uuid
+  text        text
+  created_at  timestamp
+```
+
+---
+
+# DATABASE INDEXES
+
+Create the following indexes:
+
+```
+posts_created_at_idx
+    ON posts(created_at DESC)
+
+messages_post_position_idx
+    ON messages(post_id, position)
+
+likes_post_user_idx
+    ON likes(post_id, user_id)
+
+posts_created_by_idx
+    ON posts(created_by)
+```
+
+---
+
+# CONVERSATION FORMAT
+
+Canonical conversation format:
+
+```json
+{
+  "messages": [
+    {
+      "id": "msg1",
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "Explain recursion like I'm 10"}
+      ]
+    },
+    {
+      "id": "msg2",
+      "role": "assistant",
+      "content": [
+        {"type": "text", "text": "Imagine a box that contains another box"}
+      ]
+    }
+  ]
+}
+```
+
+Store this structure in:
+
+```
+posts.conversation_json
+```
+
+Messages must also be parsed and inserted into the `messages` table.
+
+---
+
+# EMBEDDINGS
+
+Use sentence-transformers model:
+
+```
+all-MiniLM-L6-v2
+```
+
+Embeddings must be generated from:
+
+```
+conversation_summary
+```
+
+Embedding generation must:
+
+* run in a FastAPI `BackgroundTask`
+* never block the request
+
+When a post is created:
+
+```
+embedding = NULL
+```
+
+A background task must compute and persist it later.
+
+The embedding model must be loaded **once at application startup** and reused across requests.
+
+---
+
+# IMPORT SERVICE
+
+Endpoint
+
+```
+POST /import
+```
+
+Payload
+
+```json
+{
+  "url": "https://chatgpt.com/share/abc123"
+}
+```
+
+---
+
+## Mock Implementation Requirement
+
+ChatGPT and Claude share pages render content via JavaScript.
+
+The HTML returned by `requests` contains only a shell.
+
+Therefore implement a **mock importer**.
+
+For URLs matching:
+
+```
+chatgpt.com/share/*
+claude.ai/share/*
+```
+
+Return a **hardcoded conversation fixture**.
+
+Add a TODO comment explaining that production would require a headless browser such as Playwright to extract `__NEXT_DATA__` or equivalent JS payload.
+
+---
+
+## Import Pipeline
+
+Steps:
+
+1 Detect platform from URL
+2 Return mock fixture
+3 Normalize conversation
+4 Extract prompt from first user message
+5 Generate conversation_summary (first user message + first assistant response)
+6 Schedule embedding background task
+7 Return preview post
+
+---
+
+# IMPORT NORMALIZERS
+
+Create:
+
+```
+chatgpt_normalizer.py
+claude_normalizer.py
+```
+
+Both must convert raw conversation data into the canonical conversation format.
+
+---
+
+# API ENDPOINTS
+
+```
+POST   /users
+Create a user with a username. No auth required. Returns the created user including their UUID
+
+POST   /posts
+Create post (requires X-User-Id)
+
+POST   /import
+Import conversation from share link (requires X-User-Id)
+
+GET    /posts
+Return latest posts ordered by created_at DESC with cursor pagination
+
+GET    /posts/{post_id}
+Return a single post
+
+GET    /posts/{post_id}/messages
+Return a list of the parsed messages from a post
+
+GET    /users/{user_id}
+Return user metadata
+
+GET    /users/{user_id}/posts
+Return posts created by the user
+
+GET    /search/posts?q=<query>
+Perform semantic search using pgvector
+
+GET    /posts/{post_id}/similar
+Return similar posts using embedding similarity
+
+POST   /posts/{post_id}/like
+(requires X-User-Id)
+
+POST   /posts/{post_id}/remix
+Creates a new post derived from an existing conversation. The new post references the original via remix_of and may extend or modify the conversation (requires X-User-Id)
+```
+
+---
+
+# CURSOR PAGINATION
+
+Use a **compound cursor**.
+
+Cursor format:
+
+```
+base64(created_at|post_id)
+```
+
+Example decoded cursor:
+
+```
+2026-03-14T10:15:30Z|uuid
+```
+
+Query pattern:
+
+```
+WHERE (created_at, id) < (:created_at, :id)
+ORDER BY created_at DESC, id DESC
+LIMIT :limit
+```
+
+Response format:
+
+```json
+{
+  "data": [...],
+  "next_cursor": "base64_cursor_or_null"
+}
+```
+
+---
+
+# SEMANTIC SEARCH
+
+Steps:
+
+1 Generate query embedding
+2 Perform pgvector similarity search
+
+Example SQL:
+
+```
+SELECT *
+FROM posts
+WHERE embedding IS NOT NULL
+ORDER BY embedding <-> query_embedding
+LIMIT 20
+```
+
+---
+
+# DOCKER
+
+Create docker-compose with:
+
+* FastAPI backend
+* PostgreSQL
+* pgvector extension enabled
+
+The backend container must install dependencies using:
+
+```
+uv sync
+```
+
+The project must run locally with:
+
+```
+docker-compose up
+```
+
+---
+
+# CODE QUALITY
+
+Code must resemble production backend code written by a senior engineer.
+
+Requirements:
+
+* typed functions
+* modular services
+* structured logging
+* environment configuration
+* docstrings
+* error handling
+
+---
+
+# DELIVERABLE
+
+Generate a complete runnable backend including:
+
+* FastAPI application
+* SQLAlchemy models
+* Pydantic schemas
+* Alembic migrations
+* Import service with mock importer
+* Background embedding generation
+* Cursor pagination
+* Semantic search
+* Docker environment
+* Dependencies managed with uv
+
