@@ -1,3 +1,4 @@
+import logging
 import uuid
 from typing import Any
 
@@ -16,6 +17,9 @@ from app.services.conversation_parser import (
 from app.services.embedding_service import embedding_service
 from app.normalizers.chatgpt_normalizer import normalize_chatgpt
 from app.normalizers.claude_normalizer import normalize_claude
+from app.services.headless_importer import headless_importer
+
+logger = logging.getLogger("replyweave.importer")
 
 
 def _detect_platform(url: str) -> str:
@@ -26,39 +30,27 @@ def _detect_platform(url: str) -> str:
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported URL")
 
 
-def _mock_fixture(platform: str) -> dict[str, Any]:
-    # TODO: Production should use a headless browser (Playwright) to extract JS payloads.
-    if platform == "chatgpt":
-        return {
-            "messages": [
-                {
-                    "id": "msg1",
-                    "role": "user",
-                    "content": [{"type": "text", "text": "Explain recursion like I'm 10"}],
-                },
-                {
-                    "id": "msg2",
-                    "role": "assistant",
-                    "content": [
-                        {"type": "text", "text": "Imagine a box that contains another box."}
-                    ],
-                },
-            ]
-        }
-    return {
-        "messages": [
-            {
-                "id": "msg1",
-                "role": "user",
-                "content": [{"type": "text", "text": "What is the capital of France?"}],
-            },
-            {
-                "id": "msg2",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Paris is the capital of France."}],
-            },
-        ]
-    }
+async def _fetch_payload(url: str) -> dict[str, Any]:
+    try:
+        return await headless_importer.fetch_payload(url)
+    except RuntimeError as exc:
+        logger.exception("Import failed: scraping not available")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        logger.exception("Import failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        logger.exception("Import failed with unexpected error")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to import conversation from share link",
+        ) from exc
 
 
 async def create_post_from_conversation(
@@ -125,7 +117,7 @@ async def import_from_url(
     background_tasks: BackgroundTasks,
 ) -> Post:
     platform = _detect_platform(url)
-    raw = _mock_fixture(platform)
+    raw = await _fetch_payload(url)
 
     if platform == "chatgpt":
         normalized = normalize_chatgpt(raw)
@@ -138,5 +130,5 @@ async def import_from_url(
         session=session,
         background_tasks=background_tasks,
         source_platform=platform,
-        source_model="mock",
+        source_model="share",
     )
